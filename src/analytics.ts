@@ -25,6 +25,7 @@ export function buildDataPoint(identity: ClientIdentity, features: FeatureStats 
 			identity.surface,
 			features?.channels.join(LIST_SEPARATOR) ?? "",
 			features?.providerFamilies.join(LIST_SEPARATOR) ?? "",
+			features?.plugins.join(LIST_SEPARATOR) ?? "",
 		],
 		doubles: [
 			features ? 1 : 0,

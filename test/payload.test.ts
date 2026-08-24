@@ -47,6 +47,7 @@ describe("parseFeatureStats", () => {
 		features: {
 			channels: ["telegram", "discord"],
 			providerFamilies: ["openai", "anthropic"],
+			plugins: ["codex", "acpx"],
 			pluginsEnabled: 7,
 			sessionsLast24h: 14,
 		},
@@ -56,6 +57,7 @@ describe("parseFeatureStats", () => {
 		expect(parseFeatureStats(body)).toEqual({
 			channels: ["discord", "telegram"],
 			providerFamilies: ["anthropic", "openai"],
+			plugins: ["acpx", "codex"],
 			pluginsEnabled: 7,
 			sessionsLast24h: 14,
 		});
@@ -76,6 +78,7 @@ describe("parseFeatureStats", () => {
 		});
 		expect(parsed && Object.keys(parsed).sort()).toEqual([
 			"channels",
+			"plugins",
 			"pluginsEnabled",
 			"providerFamilies",
 			"sessionsLast24h",
@@ -107,7 +110,16 @@ describe("buildDataPoint", () => {
 	it("marks rows without feature stats and still records the identity columns", () => {
 		const point = buildDataPoint(identity, undefined);
 		expect(point.indexes).toEqual(["2026.8.2"]);
-		expect(point.blobs).toEqual(["2026.8.2", "darwin", "arm64", "node/v26.0.1", "gateway", "", ""]);
+		expect(point.blobs).toEqual([
+			"2026.8.2",
+			"darwin",
+			"arm64",
+			"node/v26.0.1",
+			"gateway",
+			"",
+			"",
+			"",
+		]);
 		expect(point.doubles).toEqual([0, 0, 0]);
 	});
 
@@ -117,6 +129,7 @@ describe("buildDataPoint", () => {
 			features: {
 				channels: ["telegram", "discord"],
 				providerFamilies: ["anthropic"],
+				plugins: ["codex"],
 				pluginsEnabled: 7,
 				sessionsLast24h: 14,
 			},
@@ -124,6 +137,7 @@ describe("buildDataPoint", () => {
 		const point = buildDataPoint(identity, features);
 		expect(point.blobs[5]).toBe("discord,telegram");
 		expect(point.blobs[6]).toBe("anthropic");
+		expect(point.blobs[7]).toBe("codex");
 		expect(point.doubles).toEqual([1, 7, 14]);
 	});
 
@@ -132,7 +146,7 @@ describe("buildDataPoint", () => {
 		for (const forbidden of ["id", "uuid", "ip", "host", "user"]) {
 			expect(serialized.toLowerCase()).not.toContain(`"${forbidden}"`);
 		}
-		expect(countRecordedColumns(buildDataPoint(identity, undefined))).toBe(11);
+		expect(countRecordedColumns(buildDataPoint(identity, undefined))).toBe(12);
 	});
 });
 

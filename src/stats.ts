@@ -11,6 +11,7 @@ export type PublicStats = {
 	platforms: Array<{ platform: string; pings: number }>;
 	channels: Array<{ channel: string; installs: number }>;
 	providerFamilies: Array<{ provider: string; installs: number }>;
+	plugins: Array<{ plugin: string; installs: number }>;
 };
 
 const WINDOW_DAYS = 7;
@@ -59,8 +60,9 @@ export async function queryPublicStats(env: Env): Promise<PublicStats | undefine
 		),
 		runQuery(
 			env,
-			`SELECT blob6 AS channels, blob7 AS providers, SUM(_sample_interval) AS pings FROM openclaw_telemetry
-			 WHERE timestamp > ${since} AND double1 = 1 GROUP BY channels, providers LIMIT 1000`,
+			`SELECT blob6 AS channels, blob7 AS providers, blob8 AS plugins, SUM(_sample_interval) AS pings
+			 FROM openclaw_telemetry
+			 WHERE timestamp > ${since} AND double1 = 1 GROUP BY channels, providers, plugins LIMIT 1000`,
 		),
 	]);
 	if (!versionRows || !platformRows) return undefined;
@@ -68,14 +70,17 @@ export async function queryPublicStats(env: Env): Promise<PublicStats | undefine
 	// Feature lists arrive as comma-joined blobs; fan them back out per install.
 	const channelTotals = new Map<string, number>();
 	const providerTotals = new Map<string, number>();
+	const pluginTotals = new Map<string, number>();
+	const accumulate = (totals: Map<string, number>, joined: string, pings: number) => {
+		for (const name of joined.split(",").filter(Boolean)) {
+			totals.set(name, (totals.get(name) ?? 0) + pings);
+		}
+	};
 	for (const row of featureRows ?? []) {
 		const pings = toCount(row.pings);
-		for (const channel of text(row.channels).split(",").filter(Boolean)) {
-			channelTotals.set(channel, (channelTotals.get(channel) ?? 0) + pings);
-		}
-		for (const provider of text(row.providers).split(",").filter(Boolean)) {
-			providerTotals.set(provider, (providerTotals.get(provider) ?? 0) + pings);
-		}
+		accumulate(channelTotals, text(row.channels), pings);
+		accumulate(providerTotals, text(row.providers), pings);
+		accumulate(pluginTotals, text(row.plugins), pings);
 	}
 
 	const rank = (totals: Map<string, number>) =>
@@ -88,5 +93,6 @@ export async function queryPublicStats(env: Env): Promise<PublicStats | undefine
 		platforms: platformRows.map((row) => ({ platform: text(row.platform), pings: toCount(row.pings) })),
 		channels: rank(channelTotals).map(([channel, installs]) => ({ channel, installs })),
 		providerFamilies: rank(providerTotals).map(([provider, installs]) => ({ provider, installs })),
+		plugins: rank(pluginTotals).map(([plugin, installs]) => ({ plugin, installs })),
 	};
 }

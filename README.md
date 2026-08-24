@@ -37,6 +37,7 @@ defaults to **no** — the same request carries a small JSON body:
   "features": {
     "channels": ["telegram", "discord"],
     "providerFamilies": ["anthropic", "openai"],
+    "plugins": ["codex", "diagnostics-otel"],
     "pluginsEnabled": 7,
     "sessionsLast24h": 14
   }
@@ -58,13 +59,41 @@ One Analytics Engine row per request, with these columns and no others:
 | `blob5` | Surface (`gateway`, `cli`) |
 | `blob6` | Opted-in channel ids, comma-joined |
 | `blob7` | Opted-in provider families, comma-joined |
+| `blob8` | Opted-in plugin ids, comma-joined |
 | `double1` | `1` if the request included feature stats, else `0` |
-| `double2` | Enabled plugin count |
+| `double2` | Total enabled plugin count, including plugins not named above |
 | `double3` | Sessions in the last 24 hours |
 
 Unknown keys in a request body are dropped rather than stored, so a future client cannot silently
 widen what this service keeps. Values are length-bounded and character-filtered before they are
 written.
+
+Only **publicly known** plugin, channel, and provider ids are ever named. The client reports names
+only for plugins bundled with OpenClaw or published in its official catalog, and this server
+independently re-checks every name against those same published catalogs. Privately developed
+plugins are counted in `double2` but never named, because a private plugin id would identify the
+organization running it.
+
+## Abuse resistance
+
+This endpoint is unauthenticated, and no client-side identifier would change that — an attacker who
+can forge a million pings can forge a million UUIDs just as cheaply. The defenses are therefore at
+the edge and in validation:
+
+- **Per-IP rate limiting** on what gets *recorded*. A real install reports once a day, so the limit
+  only bites on floods. Over-limit callers still receive their version answer; they simply stop
+  counting, so a busy NAT never loses update checks. The IP is used for the decision and never
+  stored.
+- **Vocabulary allowlisting.** Every reported name is checked against the published OpenClaw
+  catalogs, and versions must match the real release format. Invented values become `unknown`
+  rather than appearing on the public page. If the catalogs cannot be fetched, names are dropped
+  and only counts are recorded — this fails closed rather than publishing unverified text.
+- **Plausibility.** Raw rows are retained, so a skew attempt appears as a discontinuity in a
+  dimension and can be discounted after the fact.
+
+An attacker willing to distribute traffic can still inflate counts for things that genuinely exist.
+That is inherent to unauthenticated census data, and acceptable: these numbers inform which features
+get attention, not billing or security decisions.
 
 ## What is never stored
 

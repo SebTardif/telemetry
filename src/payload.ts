@@ -18,6 +18,7 @@ export type ClientIdentity = {
 export type FeatureStats = {
 	channels: string[];
 	providerFamilies: string[];
+	plugins: string[];
 	pluginsEnabled: number;
 	sessionsLast24h: number;
 };
@@ -85,6 +86,7 @@ export function parseFeatureStats(body: unknown): FeatureStats | undefined {
 	return {
 		channels: sanitizeList(features.channels),
 		providerFamilies: sanitizeList(features.providerFamilies),
+		plugins: sanitizeList(features.plugins),
 		pluginsEnabled: sanitizeCount(features.pluginsEnabled),
 		sessionsLast24h: sanitizeCount(features.sessionsLast24h),
 	};

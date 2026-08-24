@@ -1,3 +1,4 @@
+import { keepKnownNames, loadKnownNames, normalizeVersion } from "./allowlist.js";
 import { buildDataPoint } from "./analytics.js";
 import type { Env } from "./env.js";
 import { parseClientIdentity, parseFeatureStats } from "./payload.js";
@@ -80,16 +81,46 @@ async function readFeatureStats(request: Request) {
 	return parseFeatureStats(parsed);
 }
 
-async function handleLatestVersion(request: Request, env: Env): Promise<Response> {
+/**
+ * Per-IP limit on how many requests may be *recorded*. A real install reports
+ * once a day, so this only bites on floods. The client IP is used for the
+ * decision and never stored.
+ */
+async function mayRecord(request: Request, env: Env): Promise<boolean> {
+	const limiter = env.RATE_LIMIT;
+	if (!limiter) return true;
+	const key = request.headers.get("cf-connecting-ip") ?? "unknown";
+	const outcome = await limiter.limit({ key }).catch(() => undefined);
+	return outcome?.success !== false;
+}
+
+async function recordRequest(request: Request, env: Env): Promise<void> {
+	// Over-limit callers still get their answer below; they just stop counting.
+	if (!(await mayRecord(request, env))) return;
+
 	const identity = parseClientIdentity(request.headers.get("user-agent"));
 	const features = await readFeatureStats(request);
+	const known = features ? await loadKnownNames() : undefined;
+	const validated = features
+		? {
+				...features,
+				channels: keepKnownNames(features.channels, known),
+				providerFamilies: keepKnownNames(features.providerFamilies, known),
+				plugins: keepKnownNames(features.plugins, known),
+			}
+		: undefined;
 
-	// Recording must never influence the answer the client came for.
 	try {
-		env.TELEMETRY.writeDataPoint(buildDataPoint(identity, features));
+		env.TELEMETRY.writeDataPoint(
+			buildDataPoint({ ...identity, version: normalizeVersion(identity.version) }, validated),
+		);
 	} catch {
 		// Intentionally ignored: an analytics failure is not a client failure.
 	}
+}
+
+async function handleLatestVersion(request: Request, env: Env): Promise<Response> {
+	await recordRequest(request, env);
 
 	const latest = await fetchLatestVersion();
 	if (!latest) return jsonResponse({ error: "version_unavailable" }, 503);

@@ -52,6 +52,7 @@ footer { margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid var(--line
   "features": {
     "channels": ["telegram", "discord"],
     "providerFamilies": ["anthropic", "openai"],
+    "plugins": ["codex", "diagnostics-otel"],
     "pluginsEnabled": 7,
     "sessionsLast24h": 14
   }
@@ -82,6 +83,7 @@ footer { margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid var(--line
   <div><h3>Platforms</h3><table><tbody id="platforms"></tbody></table></div>
   <div><h3>Channels</h3><table><tbody id="channels"></tbody></table></div>
   <div><h3>Providers</h3><table><tbody id="providers"></tbody></table></div>
+  <div><h3>Plugins</h3><table><tbody id="plugins"></tbody></table></div>
 </div>
 
 <footer>
@@ -113,6 +115,7 @@ Docs: <a href="https://docs.openclaw.ai/gateway/telemetry">docs.openclaw.ai/gate
     fill("platforms", data.platforms.map((row) => [row.platform, row.pings]));
     fill("channels", data.channels.map((row) => [row.channel, row.installs]));
     fill("providers", data.providerFamilies.map((row) => [row.provider, row.installs]));
+    fill("plugins", data.plugins.map((row) => [row.plugin, row.installs]));
     status.textContent = "Last " + data.windowDays + " days, updated " + new Date(data.generatedAt).toUTCString() + ".";
     document.getElementById("stats").hidden = false;
   } catch {
