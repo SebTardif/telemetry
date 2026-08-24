@@ -1,0 +1,142 @@
+import { describe, expect, it } from "vitest";
+import { buildDataPoint } from "../src/analytics.js";
+import { parseClientIdentity, parseFeatureStats } from "../src/payload.js";
+
+describe("parseClientIdentity", () => {
+	it("reads version, platform, runtime, arch and surface from the client User-Agent", () => {
+		expect(parseClientIdentity("openclaw/2026.8.2 (darwin; node/v26.0.1; arm64; gateway)")).toEqual({
+			version: "2026.8.2",
+			platform: "darwin",
+			runtime: "node/v26.0.1",
+			arch: "arm64",
+			surface: "gateway",
+		});
+	});
+
+	it("treats a missing surface as unknown rather than failing the parse", () => {
+		expect(parseClientIdentity("openclaw/2026.8.2 (linux; node/v24.0.0; x64)")).toMatchObject({
+			version: "2026.8.2",
+			platform: "linux",
+			surface: "unknown",
+		});
+	});
+
+	it("degrades unparseable and absent User-Agents to unknown", () => {
+		for (const value of [null, "", "curl/8.4.0", "openclaw/"]) {
+			const identity = parseClientIdentity(value);
+			expect(identity.version).toBe("unknown");
+			expect(identity.platform).toBe("unknown");
+		}
+	});
+
+	it("strips characters outside the recorded vocabulary and bounds field length", () => {
+		const identity = parseClientIdentity(
+			`openclaw/${"9".repeat(200)}<script> (dar win"; node/v1; a<b>rch; gateway)`,
+		);
+		expect(identity.version).toHaveLength(64);
+		expect(identity.version).not.toContain("<");
+		expect(identity.arch).toBe("abrch");
+		expect(identity.platform).toBe("darwin");
+	});
+});
+
+describe("parseFeatureStats", () => {
+	const body = {
+		schema: 1,
+		version: "2026.8.2",
+		features: {
+			channels: ["telegram", "discord"],
+			providerFamilies: ["openai", "anthropic"],
+			pluginsEnabled: 7,
+			sessionsLast24h: 14,
+		},
+	};
+
+	it("accepts a documented payload and sorts lists for stable rows", () => {
+		expect(parseFeatureStats(body)).toEqual({
+			channels: ["discord", "telegram"],
+			providerFamilies: ["anthropic", "openai"],
+			pluginsEnabled: 7,
+			sessionsLast24h: 14,
+		});
+	});
+
+	it("rejects bodies without the current schema marker", () => {
+		expect(parseFeatureStats({ ...body, schema: 2 })).toBeUndefined();
+		expect(parseFeatureStats({ features: body.features })).toBeUndefined();
+		expect(parseFeatureStats("nope")).toBeUndefined();
+		expect(parseFeatureStats(null)).toBeUndefined();
+		expect(parseFeatureStats([body])).toBeUndefined();
+	});
+
+	it("drops undocumented keys instead of storing them", () => {
+		const parsed = parseFeatureStats({
+			...body,
+			features: { ...body.features, hostname: "peters-mac.local", installId: "abc-123" },
+		});
+		expect(parsed && Object.keys(parsed).sort()).toEqual([
+			"channels",
+			"pluginsEnabled",
+			"providerFamilies",
+			"sessionsLast24h",
+		]);
+		expect(JSON.stringify(parsed)).not.toContain("peters-mac");
+		expect(JSON.stringify(parsed)).not.toContain("abc-123");
+	});
+
+	it("bounds list length and coerces hostile counts", () => {
+		const parsed = parseFeatureStats({
+			schema: 1,
+			features: {
+				channels: Array.from({ length: 100 }, (_, index) => `channel${index}`),
+				providerFamilies: [1, null, "openai"],
+				pluginsEnabled: -5,
+				sessionsLast24h: Number.POSITIVE_INFINITY,
+			},
+		});
+		expect(parsed?.channels).toHaveLength(32);
+		expect(parsed?.providerFamilies).toEqual(["openai"]);
+		expect(parsed?.pluginsEnabled).toBe(0);
+		expect(parsed?.sessionsLast24h).toBe(0);
+	});
+});
+
+describe("buildDataPoint", () => {
+	const identity = parseClientIdentity("openclaw/2026.8.2 (darwin; node/v26.0.1; arm64; gateway)");
+
+	it("marks rows without feature stats and still records the identity columns", () => {
+		const point = buildDataPoint(identity, undefined);
+		expect(point.indexes).toEqual(["2026.8.2"]);
+		expect(point.blobs).toEqual(["2026.8.2", "darwin", "arm64", "node/v26.0.1", "gateway", "", ""]);
+		expect(point.doubles).toEqual([0, 0, 0]);
+	});
+
+	it("records opted-in feature stats in the documented column order", () => {
+		const features = parseFeatureStats({
+			schema: 1,
+			features: {
+				channels: ["telegram", "discord"],
+				providerFamilies: ["anthropic"],
+				pluginsEnabled: 7,
+				sessionsLast24h: 14,
+			},
+		});
+		const point = buildDataPoint(identity, features);
+		expect(point.blobs[5]).toBe("discord,telegram");
+		expect(point.blobs[6]).toBe("anthropic");
+		expect(point.doubles).toEqual([1, 7, 14]);
+	});
+
+	it("never writes an identifier column that could link two pings", () => {
+		const serialized = JSON.stringify(buildDataPoint(identity, undefined));
+		for (const forbidden of ["id", "uuid", "ip", "host", "user"]) {
+			expect(serialized.toLowerCase()).not.toContain(`"${forbidden}"`);
+		}
+		expect(countRecordedColumns(buildDataPoint(identity, undefined))).toBe(11);
+	});
+});
+
+/** Total recorded columns; a change here means the storage contract moved. */
+function countRecordedColumns(point: ReturnType<typeof buildDataPoint>): number {
+	return point.indexes.length + point.blobs.length + point.doubles.length;
+}
