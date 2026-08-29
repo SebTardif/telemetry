@@ -13,7 +13,7 @@ const UPSTREAM_TIMEOUT_MS = 5_000;
  */
 const VERSION_CACHE_SECONDS = 300;
 /** Body cap: the documented payload is well under 1 KB. */
-const MAX_BODY_BYTES = 16_384;
+export const MAX_BODY_BYTES = 16_384;
 
 /**
  * Operator-visible note attached to update checks. Keep empty in normal
@@ -65,12 +65,54 @@ async function fetchLatestVersion(): Promise<LatestVersion | undefined> {
 	return { version };
 }
 
-async function readFeatureStats(request: Request) {
+function rejectDeclaredLength(request: Request): boolean {
+	const header = request.headers.get("content-length");
+	if (header === null) return false;
+	if (!/^[0-9]+$/.test(header)) return true;
+	const declared = Number(header);
+	return !Number.isSafeInteger(declared) || declared > MAX_BODY_BYTES;
+}
+
+/** Count stream bytes so a missing Content-Length cannot allocate the whole body. */
+async function readCappedText(request: Request): Promise<string | undefined> {
+	if (rejectDeclaredLength(request)) return undefined;
+
+	const body = request.body;
+	if (!body) return undefined;
+
+	const reader = body.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	try {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			if (!value?.byteLength) continue;
+			total += value.byteLength;
+			if (total > MAX_BODY_BYTES) {
+				await reader.cancel().catch(() => undefined);
+				return undefined;
+			}
+			chunks.push(value);
+		}
+	} catch {
+		return undefined;
+	}
+
+	if (total === 0) return undefined;
+	const bytes = new Uint8Array(total);
+	let offset = 0;
+	for (const chunk of chunks) {
+		bytes.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return new TextDecoder().decode(bytes);
+}
+
+export async function readFeatureStats(request: Request) {
 	if (request.method !== "POST") return undefined;
-	const declared = Number(request.headers.get("content-length") ?? "0");
-	if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) return undefined;
-	const raw = await request.text().catch(() => "");
-	if (!raw || raw.length > MAX_BODY_BYTES) return undefined;
+	const raw = await readCappedText(request);
+	if (!raw) return undefined;
 	const parsed = ((): unknown => {
 		try {
 			return JSON.parse(raw);
