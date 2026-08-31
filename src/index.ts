@@ -1,7 +1,8 @@
 import { keepKnownNames, loadKnownNames, normalizeVersion } from "./allowlist.js";
 import { buildDataPoint } from "./analytics.js";
 import type { Env } from "./env.js";
-import { parseClientIdentity, parseFeatureStats } from "./payload.js";
+import { readFeatureStats } from "./feature-stats.js";
+import { parseClientIdentity } from "./payload.js";
 import { renderHomePage } from "./page.js";
 import { queryPublicStats } from "./stats.js";
 
@@ -12,8 +13,6 @@ const UPSTREAM_TIMEOUT_MS = 5_000;
  * out of the hot path while never serving a stale release for long.
  */
 const VERSION_CACHE_SECONDS = 300;
-/** Body cap: the documented payload is well under 1 KB. */
-const MAX_BODY_BYTES = 16_384;
 
 /**
  * Operator-visible note attached to update checks. Keep empty in normal
@@ -63,22 +62,6 @@ async function fetchLatestVersion(): Promise<LatestVersion | undefined> {
 		}),
 	);
 	return { version };
-}
-
-async function readFeatureStats(request: Request) {
-	if (request.method !== "POST") return undefined;
-	const declared = Number(request.headers.get("content-length") ?? "0");
-	if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) return undefined;
-	const raw = await request.text().catch(() => "");
-	if (!raw || raw.length > MAX_BODY_BYTES) return undefined;
-	const parsed = ((): unknown => {
-		try {
-			return JSON.parse(raw);
-		} catch {
-			return undefined;
-		}
-	})();
-	return parseFeatureStats(parsed);
 }
 
 /**
