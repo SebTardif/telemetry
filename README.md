@@ -45,6 +45,8 @@ defaults to **no** — the same request carries a small JSON body:
 ```
 
 Installs that were never asked interactively — Docker, CI, scripted setups — never send the body.
+The server limits feature-statistics bodies to 16 KiB while reading the upload. Oversized or
+malformed bodies are discarded, and the request still receives its version answer.
 
 ## What is stored
 

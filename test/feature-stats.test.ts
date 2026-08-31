@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_BODY_BYTES, readFeatureStats } from "../src/index.js";
+import { MAX_BODY_BYTES, readFeatureStats } from "../src/feature-stats.js";
 
 const FEATURE_BODY = JSON.stringify({
 	schema: 1,
