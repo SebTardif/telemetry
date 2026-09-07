@@ -45,6 +45,8 @@ defaults to **no** — the same request carries a small JSON body:
 ```
 
 Installs that were never asked interactively — Docker, CI, scripted setups — never send the body.
+The server limits feature-statistics bodies to 16 KiB while reading the upload. Oversized or
+malformed bodies are discarded, and the request still receives its version answer.
 
 ## What is stored
 
@@ -82,12 +84,16 @@ the edge and in validation:
 
 - **Per-IP rate limiting** on what gets *recorded*. A real install reports once a day, so the limit
   only bites on floods. Over-limit callers still receive their version answer; they simply stop
-  counting, so a busy NAT never loses update checks. The IP is used for the decision and never
-  stored.
+  counting, so a busy NAT never loses update checks. The Worker reads the IP transiently for
+  this decision and does not write it to Analytics Engine.
 - **Vocabulary allowlisting.** Every reported name is checked against the published OpenClaw
   catalogs, and versions must match the real release format. Invented values become `unknown`
   rather than appearing on the public page. If the catalogs cannot be fetched, names are dropped
   and only counts are recorded — this fails closed rather than publishing unverified text.
+- **Public stats caching.** Aggregate responses are cached for ten minutes. Cache misses have a
+  separate per-IP limit of 20 requests per minute using the same binding; they do not consume
+  recording capacity, and cache hits consume neither counter. Denied misses return `429`
+  without querying Analytics Engine. Cache failures do not prevent successful SQL responses.
 - **Plausibility.** Raw rows are retained, so a skew attempt appears as a discontinuity in a
   dimension and can be discounted after the fact.
 
@@ -95,19 +101,21 @@ An attacker willing to distribute traffic can still inflate counts for things th
 That is inherent to unauthenticated census data, and acceptable: these numbers inform which features
 get attention, not billing or security decisions.
 
-## What is never stored
+## What is excluded from Analytics Engine
 
 - Message content, prompts, model output, file contents, or file paths
 - Credentials, tokens, or secret references
 - IP addresses, hostnames, usernames, or account identifiers
 - Any install ID or device ID
 
-There is deliberately no identifier of any kind, which means **daily pings are unlinkable**: we
-cannot tell whether two reports came from the same machine, and therefore cannot build retention
-curves or per-install histories. That is a real analytical cost, accepted on purpose.
+These Analytics Engine rows contain no install or device identifier, so the service does not
+maintain per-install histories or retention curves.
 
-Cloudflare terminates the TLS connection and therefore sees client IPs, as any host would. This
-Worker never reads, forwards, or records them, and request logging is not enabled on it.
+Cloudflare handles TLS and network requests and sees client IP addresses. The Worker reads
+`cf-connecting-ip` transiently and passes it to Cloudflare's rate-limiting binding; it does not
+write that IP to Analytics Engine. Worker observability, logs, and invocation logs are explicitly
+disabled in [`wrangler.jsonc`](wrangler.jsonc). These settings do not describe or control
+Cloudflare's separate infrastructure-level processing.
 
 ## Turning it off
 
@@ -122,14 +130,17 @@ documentation lives at [docs.openclaw.ai/gateway/telemetry](https://docs.opencla
 
 ## Development
 
+Use Node.js 24 (the version used in CI) and npm.
+
 ```bash
-npm install
+npm ci
 npm run check     # typecheck + tests
 npm run dev       # local worker at http://localhost:8787
 npm run deploy    # requires Cloudflare credentials for the OpenClaw account
 ```
 
-Deploys also run from GitHub Actions on pushes to `main` (see
+Pull requests run the typecheck, tests, and a Wrangler dry-run build using the committed lockfile.
+Deploys run from GitHub Actions on pushes to `main` (see
 [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)), using the `CLOUDFLARE_API_TOKEN`
 repository secret.
 

@@ -1,6 +1,8 @@
 name: Deploy
 
 on:
+  pull_request:
+    branches: [main]
   push:
     branches: [main]
   workflow_dispatch:
@@ -12,23 +14,53 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
-      - run: npm install
+      - run: npm ci
+      - name: Prove stats regressions against the original PR head
+        if: github.event_name == 'pull_request'
+        run: |
+          cp src/index.ts "$RUNNER_TEMP/stats-fixed-index.ts"
+          trap 'cp "$RUNNER_TEMP/stats-fixed-index.ts" src/index.ts' EXIT
+          curl --fail --silent --show-error \
+            https://raw.githubusercontent.com/SebTardif/telemetry/cf30fde2bdd76d7c3bc64f49c8b89cbe812a74a3/src/index.ts \
+            -o src/index.ts
+          set +e
+          npm test -- test/stats.test.ts --reporter=json --outputFile="$RUNNER_TEMP/stats-before.json"
+          result=$?
+          set -e
+          test "$result" -eq 1
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import { readFileSync } from "node:fs";
+          const report = JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/stats-before.json`, "utf8"));
+          const failed = report.testResults.flatMap(file => file.assertionResults)
+            .filter(test => test.status === "failed");
+          const expected = [
+            "reuses cached stats without SQL or quota and preserves their age",
+            "serves successful SQL when cache.match rejects",
+            "serves successful SQL when cache.put rejects",
+            "does not let recording traffic exhaust the stats budget",
+            "preserves the existing recording counter when stats misses exhaust their budget",
+          ];
+          assert.deepEqual(failed.map(test => test.title).sort(), expected.sort());
+          for (const test of failed) console.log(`Original head regression: ${test.title}`);
+          NODE
       - run: npm run check
+      - run: npx wrangler deploy --dry-run
 
   deploy:
     needs: check
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
-      - run: npm install
+      - run: npm ci
       - run: npx wrangler deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

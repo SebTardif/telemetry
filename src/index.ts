@@ -1,7 +1,8 @@
 import { keepKnownNames, loadKnownNames, normalizeVersion } from "./allowlist.js";
 import { buildDataPoint } from "./analytics.js";
 import type { Env } from "./env.js";
-import { parseClientIdentity, parseFeatureStats } from "./payload.js";
+import { readFeatureStats } from "./feature-stats.js";
+import { parseClientIdentity } from "./payload.js";
 import { renderHomePage } from "./page.js";
 import { queryPublicStats } from "./stats.js";
 
@@ -17,8 +18,6 @@ const VERSION_CACHE_SECONDS = 300;
  */
 const STATS_CACHE_SECONDS = 600;
 const STATS_CACHE_KEY = "https://telemetry.openclaw.ai/api/stats";
-/** Body cap: the documented payload is well under 1 KB. */
-const MAX_BODY_BYTES = 16_384;
 
 /**
  * Operator-visible note attached to update checks. Keep empty in normal
@@ -70,26 +69,10 @@ async function fetchLatestVersion(): Promise<LatestVersion | undefined> {
 	return { version };
 }
 
-async function readFeatureStats(request: Request) {
-	if (request.method !== "POST") return undefined;
-	const declared = Number(request.headers.get("content-length") ?? "0");
-	if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) return undefined;
-	const raw = await request.text().catch(() => "");
-	if (!raw || raw.length > MAX_BODY_BYTES) return undefined;
-	const parsed = ((): unknown => {
-		try {
-			return JSON.parse(raw);
-		} catch {
-			return undefined;
-		}
-	})();
-	return parseFeatureStats(parsed);
-}
-
-async function withinRateLimit(request: Request, env: Env): Promise<boolean> {
+async function withinRateLimit(request: Request, env: Env, prefix = ""): Promise<boolean> {
 	const limiter = env.RATE_LIMIT;
 	if (!limiter) return true;
-	const key = request.headers.get("cf-connecting-ip") ?? "unknown";
+	const key = prefix + (request.headers.get("cf-connecting-ip") ?? "unknown");
 	const outcome = await limiter.limit({ key }).catch(() => undefined);
 	return outcome?.success !== false;
 }
@@ -106,31 +89,23 @@ async function mayRecord(request: Request, env: Env): Promise<boolean> {
 async function handlePublicStats(request: Request, env: Env): Promise<Response> {
 	const cache = caches.default;
 	const cacheKey = new Request(STATS_CACHE_KEY, { method: "GET" });
-	const cached = await cache.match(cacheKey);
+	// Cache availability must not decide whether a successful SQL result is served.
+	const cached = await cache.match(cacheKey).catch(() => undefined);
 	if (cached) {
-		const body = (await cached.json().catch(() => undefined)) as unknown;
-		if (body && typeof body === "object") {
-			return jsonResponse(body, 200, STATS_CACHE_SECONDS);
-		}
+		return cached;
 	}
 
-	if (!(await withinRateLimit(request, env))) {
+	// Keep public reads independent of the existing, unprefixed recording counter.
+	if (!(await withinRateLimit(request, env, "stats:"))) {
 		return jsonResponse({ error: "rate_limited" }, 429);
 	}
 
 	const stats = await queryPublicStats(env);
 	if (!stats) return jsonResponse({ error: "stats_unavailable" }, 503);
 
-	await cache.put(
-		cacheKey,
-		new Response(JSON.stringify(stats), {
-			headers: {
-				"content-type": "application/json",
-				"cache-control": `public, max-age=${STATS_CACHE_SECONDS}`,
-			},
-		}),
-	);
-	return jsonResponse(stats, 200, STATS_CACHE_SECONDS);
+	const response = jsonResponse(stats, 200, STATS_CACHE_SECONDS);
+	await cache.put(cacheKey, response.clone()).catch(() => {});
+	return response;
 }
 
 async function recordRequest(request: Request, env: Env): Promise<void> {
